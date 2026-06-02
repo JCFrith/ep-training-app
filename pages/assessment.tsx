@@ -278,8 +278,14 @@ export default function Assessment() {
       }
 
       setResult({ ...ruleResult, submitted: true, id: summary.assessment_id, photos: uploaded.length, warning });
-      flash(`Submitted: ${summary.assessment_id}`);
-      document.getElementById('ep-determination')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Clear the form for the next assessment, but keep the confirmation panel
+      // (and the Site Approval section open) so the person sees the submission ID.
+      localStorage.removeItem(STORE);
+      setFields({}); setChecks({}); setNotes({}); setPhotos({}); setOps([]); setC2rows(blankC2());
+      setOpen({ header: true, approval: true });
+      if (markerRef.current) { mapRef.current?.removeLayer(markerRef.current); markerRef.current = null; }
+      flash(`Submitted: ${summary.assessment_id} — form cleared`);
+      setTimeout(() => document.getElementById('ep-determination')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
     } catch (e: any) {
       alert(`Assessment could not be submitted.\n\n${e?.message || e}`);
     } finally {
