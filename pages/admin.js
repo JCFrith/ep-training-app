@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { supabase, getSessionUser } from '../lib/supabase';
+import AssessmentDetail from '../lib/AssessmentDetail';
+
+const ASSESSMENT_LIST_COLS = 'id, assessment_id, site_name, site_address, latitude, longitude, assessment_type, assessment_date, assessor, rpic_reviewer, launch_method, operation_types, c2_validation_result, risk_level, oop_oomv_exposure, coa_waiver_determination, program_review_required, failed_rule_ids, corrective_actions, operating_conditions, reassessment_date, rule_matrix_version, photo_count, submitted_by, submitted_at, status';
 
 export default function Admin() {
   const router = useRouter();
@@ -23,7 +26,8 @@ export default function Admin() {
   const [aFilterSite, setAFilterSite] = useState('');
   const [aFilterDecision, setAFilterDecision] = useState('all');
   const [selected, setSelected] = useState(null);
-  const [selectedPhotos, setSelectedPhotos] = useState([]);
+  const [checkedIds, setCheckedIds] = useState([]);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     getSessionUser().then((u) => {
@@ -53,26 +57,40 @@ export default function Admin() {
 
   async function loadAssessments() {
     const { data } = await supabase.from('assessments')
-      .select('*')
+      .select(ASSESSMENT_LIST_COLS)
       .order('submitted_at', { ascending: false })
       .limit(300);
     if (data) setAssessments(data);
   }
 
   async function viewAssessment(a) {
-    setSelected(a);
-    setSelectedPhotos([]);
-    // Pull photo manifest + sign each storage path (admin can read the bucket)
-    const { data: rows } = await supabase.from('assessment_photos')
-      .select('*').eq('assessment_id', a.id).order('evidence_key');
-    if (!rows || !rows.length) return;
-    const signed = [];
-    for (const r of rows) {
-      if (!r.storage_path) continue;
-      const { data: s } = await supabase.storage.from('assessment-evidence').createSignedUrl(r.storage_path, 3600);
-      if (s?.signedUrl) signed.push({ key: r.evidence_key, url: s.signedUrl });
-    }
-    setSelectedPhotos(signed);
+    setSelected({ ...a, _loading: true });
+    // Fetch the full record (including full_assessment with all answers + photos)
+    const { data } = await supabase.from('assessments').select('*').eq('id', a.id).single();
+    setSelected(data || a);
+  }
+
+  function toggleChecked(id) {
+    setCheckedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+  function toggleAll() {
+    const visible = filteredAssessments.map(a => a.id);
+    const allSelected = visible.length > 0 && visible.every(id => checkedIds.includes(id));
+    setCheckedIds(allSelected ? [] : visible);
+  }
+  function openPdf(ids) {
+    if (!ids.length) return;
+    window.open(`/print?ids=${ids.join(',')}`, '_blank');
+  }
+  async function bulkDelete() {
+    if (!checkedIds.length) return;
+    if (!confirm(`Delete ${checkedIds.length} assessment${checkedIds.length !== 1 ? 's' : ''}? This permanently removes the record(s) and their evidence manifest. This cannot be undone.`)) return;
+    setBusy(true);
+    const { error } = await supabase.from('assessments').delete().in('id', checkedIds);
+    setBusy(false);
+    if (error) { alert('Delete failed: ' + error.message); return; }
+    setCheckedIds([]);
+    loadAssessments();
   }
 
   function decisionBadge(d) {
@@ -83,10 +101,30 @@ export default function Admin() {
   }
 
   function exportAssessmentsCsv() {
-    if (!filteredAssessments.length) return;
-    const cols = ['assessment_id', 'site_name', 'site_address', 'coa_waiver_determination', 'risk_level', 'assessor', 'rpic_reviewer', 'launch_method', 'assessment_date', 'reassessment_date', 'photo_count', 'submitted_by', 'submitted_at', 'status'];
+    const rows = checkedIds.length ? filteredAssessments.filter(a => checkedIds.includes(a.id)) : filteredAssessments;
+    if (!rows.length) return;
+    // Audit-complete column set, mirroring the View detail at the record level.
+    const cols = [
+      'assessment_id', 'status', 'site_name', 'site_address', 'latitude', 'longitude',
+      'assessment_type', 'assessment_date', 'assessor', 'rpic_reviewer', 'launch_method',
+      'operation_types', 'c2_validation_result', 'risk_level', 'oop_oomv_exposure',
+      'coa_waiver_determination', 'program_review_required', 'failed_rule_ids',
+      'corrective_actions', 'operating_conditions', 'reassessment_date',
+      'rule_matrix_version', 'photo_count', 'submitted_by', 'submitted_at',
+    ];
+    const headers = {
+      assessment_id: 'Assessment ID', status: 'Status', site_name: 'Site Name', site_address: 'Address',
+      latitude: 'Latitude', longitude: 'Longitude', assessment_type: 'Assessment Type',
+      assessment_date: 'Assessment Date', assessor: 'Assessed By', rpic_reviewer: 'RPIC Reviewing',
+      launch_method: 'Launch Method', operation_types: 'Operation Types', c2_validation_result: 'C2 Result',
+      risk_level: 'Risk Level', oop_oomv_exposure: 'OOP/OOMV Exposure', coa_waiver_determination: 'COA/Waiver Determination',
+      program_review_required: 'Program Review Required', failed_rule_ids: 'Failed Rule IDs',
+      corrective_actions: 'Corrective Actions', operating_conditions: 'Operating Conditions',
+      reassessment_date: 'Reassessment Date', rule_matrix_version: 'Rule Matrix Version',
+      photo_count: 'Photo Count', submitted_by: 'Submitted By', submitted_at: 'Submitted At',
+    };
     const esc = v => { const str = Array.isArray(v) ? v.join('; ') : v == null ? '' : String(v); return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str; };
-    const csv = cols.join(',') + '\n' + filteredAssessments.map(r => cols.map(c => esc(r[c])).join(',')).join('\n') + '\n';
+    const csv = cols.map(c => headers[c]).join(',') + '\n' + rows.map(r => cols.map(c => esc(r[c])).join(',')).join('\n') + '\n';
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -209,16 +247,36 @@ export default function Admin() {
                 <option value="review">Needs Program Review</option>
                 <option value="not">Not Approved</option>
               </select>
-              <button className="btn btn-navy" style={{ padding: '12px 18px' }} onClick={exportAssessmentsCsv}>Export CSV</button>
+              <button className="btn btn-navy" style={{ padding: '12px 18px' }} onClick={exportAssessmentsCsv}>
+                Export CSV{checkedIds.length ? ` (${checkedIds.length})` : ''}
+              </button>
             </div>
-            <p style={{ color: 'var(--gray)', fontSize: 13, marginBottom: 8 }}>{filteredAssessments.length} assessment{filteredAssessments.length !== 1 ? 's' : ''}</p>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+              <span style={{ color: 'var(--gray)', fontSize: 13 }}>
+                {filteredAssessments.length} assessment{filteredAssessments.length !== 1 ? 's' : ''}
+                {checkedIds.length ? ` · ${checkedIds.length} selected` : ''}
+              </span>
+              {checkedIds.length > 0 && (
+                <>
+                  <button className="btn btn-gold" style={{ padding: '8px 16px', fontSize: 13 }} onClick={() => openPdf(checkedIds)}>Export PDF ({checkedIds.length})</button>
+                  <button className="btn btn-red" style={{ padding: '8px 16px', fontSize: 13 }} disabled={busy} onClick={bulkDelete}>{busy ? 'Deleting…' : `Delete Selected (${checkedIds.length})`}</button>
+                  <span className="logout" style={{ color: 'var(--gray)', cursor: 'pointer', fontSize: 13 }} onClick={() => setCheckedIds([])}>Clear</span>
+                </>
+              )}
+            </div>
+
             <table className="admin-table">
               <thead>
-                <tr><th>Assessment ID</th><th>Site</th><th>Determination</th><th>Risk</th><th>Assessor</th><th>Submitted</th><th>Photos</th><th></th></tr>
+                <tr>
+                  <th style={{ width: 34 }}><input type="checkbox" checked={filteredAssessments.length > 0 && filteredAssessments.every(a => checkedIds.includes(a.id))} onChange={toggleAll} /></th>
+                  <th>Assessment ID</th><th>Site</th><th>Determination</th><th>Risk</th><th>Assessor</th><th>Submitted</th><th>Photos</th><th></th>
+                </tr>
               </thead>
               <tbody>
                 {filteredAssessments.map(a => (
                   <tr key={a.id}>
+                    <td><input type="checkbox" checked={checkedIds.includes(a.id)} onChange={() => toggleChecked(a.id)} /></td>
                     <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{a.assessment_id}</td>
                     <td>{a.site_name || '—'}</td>
                     <td>{decisionBadge(a.coa_waiver_determination)}</td>
@@ -226,10 +284,13 @@ export default function Admin() {
                     <td>{a.submitted_by || a.assessor || '—'}</td>
                     <td>{a.submitted_at ? new Date(a.submitted_at).toLocaleDateString() : '—'}</td>
                     <td>{a.photo_count || 0}</td>
-                    <td><span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer' }} onClick={() => viewAssessment(a)}>View</span></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer' }} onClick={() => viewAssessment(a)}>View</span>
+                      <span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer', marginLeft: 12 }} onClick={() => openPdf([a.id])}>PDF</span>
+                    </td>
                   </tr>
                 ))}
-                {filteredAssessments.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--gray)' }}>No assessments found</td></tr>}
+                {filteredAssessments.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--gray)' }}>No assessments found</td></tr>}
               </tbody>
             </table>
           </div>
@@ -276,75 +337,18 @@ export default function Admin() {
 
       {selected && (
         <div onClick={() => setSelected(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(11,25,35,0.7)', zIndex: 200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflowY: 'auto' }}>
-          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--white)', borderRadius: 12, maxWidth: 760, width: '100%', padding: 28 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-              <div>
-                <h3 style={{ color: 'var(--navy)', marginBottom: 4 }}>{selected.site_name || 'Site Assessment'}</h3>
-                <p style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--gray)' }}>{selected.assessment_id}</p>
+          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--white)', borderRadius: 12, maxWidth: 900, width: '100%', padding: 28 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, position: 'sticky', top: 0, background: '#fff', paddingBottom: 8 }}>
+              <div style={{ display: 'flex', gap: 12 }}>
+                <button className="btn btn-gold" style={{ padding: '8px 16px', fontSize: 13 }} onClick={() => openPdf([selected.id])}>Open Printable / PDF</button>
               </div>
-              <span className="logout" style={{ color: 'var(--navy)', cursor: 'pointer', fontSize: 22, lineHeight: 1 }} onClick={() => setSelected(null)}>×</span>
+              <span className="logout" style={{ color: 'var(--navy)', cursor: 'pointer', fontSize: 24, lineHeight: 1 }} onClick={() => setSelected(null)}>×</span>
             </div>
-
-            <div style={{ marginBottom: 16 }}>{decisionBadge(selected.coa_waiver_determination)}</div>
-
-            <table className="admin-table" style={{ marginTop: 0, marginBottom: 16 }}>
-              <tbody>
-                <tr><th style={{ width: 180 }}>Address</th><td>{selected.site_address || '—'}</td></tr>
-                <tr><th>Coordinates</th><td>{selected.latitude != null ? `${selected.latitude}, ${selected.longitude}` : '—'}</td></tr>
-                <tr><th>Assessor</th><td>{selected.assessor || '—'}</td></tr>
-                <tr><th>RPIC Reviewer</th><td>{selected.rpic_reviewer || '—'}</td></tr>
-                <tr><th>Launch Method</th><td>{selected.launch_method || '—'}</td></tr>
-                <tr><th>Operation Types</th><td>{Array.isArray(selected.operation_types) ? selected.operation_types.join(', ') : '—'}</td></tr>
-                <tr><th>C2 Result</th><td>{selected.c2_validation_result || '—'}</td></tr>
-                <tr><th>Risk Level</th><td>{selected.risk_level || '—'}</td></tr>
-                <tr><th>OOP/OOMV Exposure</th><td>{selected.oop_oomv_exposure || '—'}</td></tr>
-                <tr><th>Program Review</th><td>{selected.program_review_required ? 'Required' : 'No'}</td></tr>
-                <tr><th>Assessment Date</th><td>{selected.assessment_date || '—'}</td></tr>
-                <tr><th>Reassessment Date</th><td>{selected.reassessment_date || '—'}</td></tr>
-                <tr><th>Submitted By</th><td>{selected.submitted_by || '—'}</td></tr>
-                <tr><th>Submitted At</th><td>{selected.submitted_at ? new Date(selected.submitted_at).toLocaleString() : '—'}</td></tr>
-                <tr><th>Rule Matrix</th><td>{selected.rule_matrix_version || '—'}</td></tr>
-              </tbody>
-            </table>
-
-            {Array.isArray(selected.corrective_actions) && selected.corrective_actions.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <h4 style={{ color: 'var(--navy)', marginBottom: 8 }}>Open Items / Corrective Actions</h4>
-                <ul style={{ paddingLeft: 18, color: 'var(--dark)', fontSize: 13 }}>
-                  {selected.corrective_actions.map((c, i) => <li key={i} style={{ marginBottom: 4 }}>{c}</li>)}
-                </ul>
-              </div>
+            {selected._loading ? (
+              <p style={{ color: 'var(--gray)' }}>Loading full assessment…</p>
+            ) : (
+              <AssessmentDetail record={selected} />
             )}
-
-            {Array.isArray(selected.operating_conditions) && selected.operating_conditions.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <h4 style={{ color: 'var(--navy)', marginBottom: 8 }}>Operating Conditions</h4>
-                <ul style={{ paddingLeft: 18, color: 'var(--dark)', fontSize: 13 }}>
-                  {selected.operating_conditions.map((c, i) => <li key={i} style={{ marginBottom: 4 }}>{c}</li>)}
-                </ul>
-              </div>
-            )}
-
-            {Array.isArray(selected.failed_rule_ids) && selected.failed_rule_ids.length > 0 && (
-              <p style={{ fontSize: 12, color: 'var(--gray)', marginBottom: 16 }}>Failed rule IDs: {selected.failed_rule_ids.join(', ')}</p>
-            )}
-
-            <div>
-              <h4 style={{ color: 'var(--navy)', marginBottom: 8 }}>Evidence Photos ({selected.photo_count || 0})</h4>
-              {selectedPhotos.length === 0 ? (
-                <p style={{ fontSize: 13, color: 'var(--gray)' }}>
-                  {selected.photo_count ? 'Loading photos, or evidence bucket not yet configured.' : 'No photos attached.'}
-                </p>
-              ) : (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {selectedPhotos.map((p, i) => (
-                    <a key={i} href={p.url} target="_blank" rel="noreferrer" title={p.key}>
-                      <img src={p.url} alt={p.key} style={{ width: 110, height: 110, objectFit: 'cover', borderRadius: 6, border: '1px solid #E0E0E0' }} />
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
         </div>
       )}
