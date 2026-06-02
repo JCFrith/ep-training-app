@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { supabase } from '../lib/supabase';
+import { supabase, getSessionUser } from '../lib/supabase';
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -9,14 +9,14 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) { router.push('/login'); return; }
-      setUser(data.user);
-      supabase.from('profiles').select('*').eq('id', data.user.id).single().then(({ data: p }) => {
+    getSessionUser().then((u) => {
+      if (!u) { router.push('/login'); return; }
+      setUser(u);
+      supabase.from('profiles').select('*').eq('id', u.id).single().then(({ data: p }) => {
         setProfile(p);
         localStorage.setItem('ep_profile', JSON.stringify(p));
       });
-      supabase.from('quiz_results').select('*').eq('user_id', data.user.id).order('completed_at', { ascending: false }).limit(10).then(({ data: r }) => {
+      supabase.from('quiz_results').select('*').eq('user_id', u.id).order('completed_at', { ascending: false }).limit(10).then(({ data: r }) => {
         if (r) setHistory(r);
       });
     });

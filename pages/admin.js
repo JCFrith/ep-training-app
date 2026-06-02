@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { supabase } from '../lib/supabase';
+import { supabase, getSessionUser } from '../lib/supabase';
 
 export default function Admin() {
   const router = useRouter();
@@ -26,9 +26,9 @@ export default function Admin() {
   const [selectedPhotos, setSelectedPhotos] = useState([]);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) { router.push('/login'); return; }
-      supabase.from('profiles').select('*').eq('id', data.user.id).single().then(({ data: p }) => {
+    getSessionUser().then((u) => {
+      if (!u) { router.push('/login'); return; }
+      supabase.from('profiles').select('*').eq('id', u.id).single().then(({ data: p }) => {
         if (!p || p.role !== 'admin') { router.push('/'); return; }
         setProfile(p);
         loadResults();

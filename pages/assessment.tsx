@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
-import { supabase } from '../lib/supabase';
+import { supabase, getSessionUser } from '../lib/supabase';
 import { SECTIONS, LOGO, type Section } from '../lib/checklist';
 import {
   determine, buildSummary, assessmentId, dataUrlToBlob, shortRunId,
@@ -70,10 +70,10 @@ export default function Assessment() {
 
   // Auth gate
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }: any) => {
-      if (!data.user) { router.push('/login'); return; }
-      supabase.from('profiles').select('*').eq('id', data.user.id).single().then(({ data: p }: any) => {
-        setProfile(p ? { ...p, id: data.user.id } : { id: data.user.id, display_name: 'User', role: 'user' });
+    getSessionUser().then((user: any) => {
+      if (!user) { router.push('/login'); return; }
+      supabase.from('profiles').select('*').eq('id', user.id).single().then(({ data: p }: any) => {
+        setProfile(p ? { ...p, id: user.id } : { id: user.id, display_name: 'User', role: 'user' });
         setAuthChecked(true);
       });
     });
