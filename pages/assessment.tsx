@@ -445,8 +445,8 @@ function ActionBar({ clearAll, backupJson, restoreJson }: any) {
   return (
     <div className="action-bar no-print">
       <button className="action-btn clear" onClick={clearAll}>Clear All</button>
-      <button className="action-btn clear json-backup-btn" onClick={backupJson}>Backup JSON</button>
-      <label className="action-btn clear json-restore-btn" style={{ cursor: 'pointer' }}>Restore JSON
+      <button className="action-btn clear json-backup-btn" onClick={backupJson}>Save Assessment</button>
+      <label className="action-btn clear json-restore-btn" style={{ cursor: 'pointer' }}>Load Assessment
         <input type="file" accept="application/json" style={{ display: 'none' }} onChange={restoreJson} />
       </label>
       <button className="action-btn export" onClick={() => window.print()}>Export / Print</button>
