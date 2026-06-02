@@ -1,6 +1,6 @@
 {
   "name": "ep-training-app",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -13,5 +13,11 @@
     "react-dom": "^18.2.0",
     "@supabase/supabase-js": "^2.38.0",
     "jspdf": "^2.5.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0"
   }
 }

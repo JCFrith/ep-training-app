@@ -27,6 +27,23 @@ This creates:
 - Row Level Security policies
 - Admin user function
 
+## Step 2b: Unified Platform Migration (training + site assessment)
+
+The site assessment tool is now part of this app. After Step 2, run the contents of
+`supabase-assessment-migration.sql` in the SQL Editor **once**. It:
+
+- Adds `assessments` and `assessment_photos` tables linked to the same `profiles`
+  (each submission is stamped with `submitted_by_user_id`).
+- Adds the `assessment_master_register` export view.
+- Fixes the `Chase Frtith` -> `Chase Frith` display-name typo.
+- Installs a non-recursive `is_admin()` helper and clean RLS policies on **all**
+  tables — this is the fix for the previous circular-reference 500 errors.
+- Sets storage policies for the private `assessment-evidence` bucket.
+
+**Then create the evidence bucket:** Supabase -> **Storage** -> New bucket -> name
+`assessment-evidence`, **Public: OFF**. (If you skip this, assessments still submit;
+only the evidence photo upload is skipped, with a warning.)
+
 ## Step 3: Create Your Admin Account
 
 In the Supabase SQL Editor, run:
@@ -64,6 +81,13 @@ This creates your admin login. You'll use the admin dashboard to create all othe
 ## How It Works
 
 - **Users** log in with username/password → select quiz (EP RPIC or THP Deployer) → take quiz → results saved to database + PDF download
-- **Admins** see all results, filter by name/date/quiz type, create new accounts
+- **Users** can also open the **BVLOS Site Assessment** field tool (`/assessment`): 11-section checklist, map, evidence photos, C2 validation, and an automatic COA/waiver determination. Each submission is saved to their account.
+- **Admins** see all quiz results AND all site assessments (new "Site Assessments" tab: filter, view full detail + evidence photos, export CSV), and create new accounts
 - No self-registration — only admins create accounts
-- All quiz history is retained and queryable
+- All quiz history and assessment records are retained and queryable
+
+## Environment Variables (unchanged)
+
+The site assessment tool reuses the **same** Supabase env vars as the training app —
+`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`.
+There is no separate site-assessment project anymore: one codebase, one database, one login.
