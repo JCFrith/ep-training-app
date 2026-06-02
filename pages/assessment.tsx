@@ -98,8 +98,10 @@ export default function Assessment() {
     localStorage.setItem(STORE, JSON.stringify({ fields, checks, notes, photos, open, ops, c2rows }));
   }, [fields, checks, notes, photos, open, ops, c2rows, hydrated]);
 
-  useEffect(() => { if (hydrated) loadLeaflet(); }, [hydrated]);
-  useEffect(() => { if (open.header) setTimeout(initMap, 150); }, [open.header]);
+  // Init the map only once the page is past the auth gate (so the map container exists)
+  // and the Site Information section is open. loadLeaflet() polls for both Leaflet and the
+  // container before drawing, so it can't fire too early and give up.
+  useEffect(() => { if (authChecked && open.header) loadLeaflet(); }, [authChecked, open.header]);
   useEffect(() => {
     const before = () => setOpen({ header: true, ...Object.fromEntries(SECTIONS.map(s => [s.id, true])) });
     window.addEventListener('beforeprint', before);
@@ -141,8 +143,9 @@ export default function Assessment() {
     }
     const start = Date.now();
     const poll = setInterval(() => {
-      if (window.L) { clearInterval(poll); initMap(); }
-      else if (Date.now() - start > 10000) clearInterval(poll);
+      // Wait for BOTH Leaflet and the map container to exist before initializing.
+      if (window.L && document.getElementById('locationMap')) { clearInterval(poll); initMap(); }
+      else if (Date.now() - start > 15000) clearInterval(poll);
     }, 100);
   }
   function initMap() {
