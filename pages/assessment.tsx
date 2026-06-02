@@ -126,6 +126,37 @@ export default function Assessment() {
     flash('Assessment cleared');
   }
 
+  function backupJson() {
+    const data = JSON.stringify(currentSaved(), null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ep-site-assessment-${(fields.siteName || 'draft').replace(/[^a-z0-9]+/gi, '-')}-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    flash('Backup downloaded');
+  }
+  function restoreJson(e: any) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const s = JSON.parse(String(r.result));
+        if (s.fields) setFields(s.fields);
+        if (s.checks) setChecks(s.checks);
+        if (s.notes) setNotes(s.notes);
+        if (s.photos) setPhotos(s.photos);
+        if (s.ops) setOps(s.ops);
+        if (s.c2rows) setC2rows(s.c2rows);
+        setOpen({ header: true });
+        flash('Assessment restored');
+      } catch { flash('Invalid backup file'); }
+    };
+    r.readAsText(file);
+    e.target.value = '';
+  }
+
   function loadLeaflet() {
     // Ensure Leaflet CSS + JS are present, then init the map once ready.
     // Polls for window.L so we never race a single onload/timeout.
@@ -299,7 +330,7 @@ export default function Assessment() {
           <div className="progress-track"><div className="progress-fill" style={{ width: `${progress.pct}%` }} /></div>
         </div>
 
-        <ActionBar clearAll={clearAll} checkCompliance={checkCompliance} submit={submit} submitting={submitting} />
+        <ActionBar clearAll={clearAll} backupJson={backupJson} restoreJson={restoreJson} />
 
         <SiteInfo open={!!open.header} toggle={() => setOpen(p => ({ ...p, header: !p.header }))} fields={fields} setField={persistField} ops={ops} setOps={setOps} locateMe={locateMe} lookupCoords={lookupCoords} />
 
@@ -333,8 +364,8 @@ export default function Assessment() {
                   </div>
                 );
               })}
-              {s.id === 'rf' && <C2 fields={fields} setField={persistField} rows={c2rows} setRows={setC2rows} />}
-              {s.id === 'approval' && <Approval fields={fields} setField={persistField} />}
+              {s.id === 'rf' && <C2 fields={fields} setField={persistField} />}
+              {s.id === 'approval' && <ApprovalSubmit fields={fields} setField={persistField} result={result} onRun={checkCompliance} onSubmit={submit} submitting={submitting} />}
               {s.notes && (
                 <div className="section-notes">
                   <label>{s.id === 'risk' ? 'Risk Mitigations & Follow-Up Actions' : 'Notes'}</label>
@@ -345,10 +376,8 @@ export default function Assessment() {
           </div>
         ))}
 
-        {result && <Determination result={result} />}
-
         <div className="bottom-action-bar no-print">
-          <ActionBar clearAll={clearAll} checkCompliance={checkCompliance} submit={submit} submitting={submitting} />
+          <ActionBar clearAll={clearAll} backupJson={backupJson} restoreJson={restoreJson} />
         </div>
       </div>
 
@@ -358,51 +387,69 @@ export default function Assessment() {
   );
 }
 
-function Determination({ result }: { result: any }) {
-  const d = String(result.decision || '');
-  const tone = /approved with conditions/i.test(d) ? 'good' : /not approved/i.test(d) ? 'bad' : 'warn';
+function ApprovalSubmit({ fields, setField, result, onRun, onSubmit, submitting }: any) {
+  const d = result ? String(result.decision || '') : '';
+  const tone = /approved with conditions/i.test(d) ? 'conditional' : /not approved/i.test(d) ? 'not-approved' : '';
   return (
-    <div id="ep-determination" className="ep-waiver-decision-panel" data-decision={tone === 'good' ? 'conditional' : tone === 'bad' ? 'not-approved' : ''}>
-      <div className="ep-waiver-decision-head">
-        <span>COA / Waiver Determination</span>
-        <strong>{d}</strong>
+    <>
+      <button className="action-btn export no-print" style={{ marginBottom: 14 }} onClick={onRun}>Run COA/Waiver Determination</button>
+
+      <div id="ep-determination" className="ep-waiver-decision-panel" data-decision={tone}>
+        <div className="ep-waiver-decision-head">
+          <span>COA / Waiver Determination</span>
+          <strong>{d || 'NOT RUN'}</strong>
+        </div>
+        <div className="ep-waiver-decision-body">
+          {!result && <p>Tap Run COA/Waiver Determination to evaluate this site.</p>}
+          {result?.submitted && (
+            <p style={{ color: 'var(--ep-gold)' }}>
+              Submitted to the Admin portal. ID: {result.id} &bull; Evidence photos uploaded: {result.photos ?? 0}
+              {result.warning ? ` (storage warning: ${result.warning})` : ''}
+            </p>
+          )}
+          {result && result.failedRuleIds?.length > 0 && (
+            <>
+              <h4>Open Items ({result.failedRuleIds.length})</h4>
+              {result.correctiveActions?.length > 0 && (
+                <ul>{result.correctiveActions.map((a: string, i: number) => <li key={i}>{a}</li>)}</ul>
+              )}
+              <p style={{ fontSize: '.75rem', color: 'var(--ep-gray)' }}>Failed rule IDs: {result.failedRuleIds.join(', ')}</p>
+            </>
+          )}
+          {result && result.failedRuleIds?.length === 0 && <p>All evaluated rules passed.</p>}
+          {result && result.operatingConditions?.length > 0 && (
+            <>
+              <h4>Operating Conditions</h4>
+              <ul>{result.operatingConditions.map((c: string, i: number) => <li key={i}>{c}</li>)}</ul>
+            </>
+          )}
+        </div>
       </div>
-      <div className="ep-waiver-decision-body">
-        {result.submitted && (
-          <p style={{ color: 'var(--ep-gold)' }}>
-            Submitted to the Admin portal. ID: {result.id} &bull; Evidence photos uploaded: {result.photos ?? 0}
-            {result.warning ? ` (storage warning: ${result.warning})` : ''}
-          </p>
-        )}
-        {result.failedRuleIds?.length > 0 ? (
-          <>
-            <h4>Open Items ({result.failedRuleIds.length})</h4>
-            {result.correctiveActions?.length > 0 && (
-              <ul>{result.correctiveActions.map((a: string, i: number) => <li key={i}>{a}</li>)}</ul>
-            )}
-            <p style={{ fontSize: '.75rem', color: 'var(--ep-gray)' }}>Failed rule IDs: {result.failedRuleIds.join(', ')}</p>
-          </>
-        ) : (
-          <p>All evaluated rules passed.</p>
-        )}
-        {result.operatingConditions?.length > 0 && (
-          <>
-            <h4>Operating Conditions</h4>
-            <ul>{result.operatingConditions.map((c: string, i: number) => <li key={i}>{c}</li>)}</ul>
-          </>
-        )}
+
+      <div className="field-row">
+        <div className="field-group"><label>Approving RPIC</label><input value={fields.approverName || ''} onChange={e => setField('approverName', e.target.value)} /></div>
+        <div className="field-group"><label>Date</label><input type="date" value={fields.approvalDate || new Date().toISOString().split('T')[0]} onChange={e => setField('approvalDate', e.target.value)} /></div>
       </div>
-    </div>
+
+      <div className="ep-submit-actions">
+        <button id="ep-submit-completed-assessment" className="action-btn export" disabled={submitting} onClick={onSubmit}>
+          {submitting ? 'Submitting…' : 'Submit Completed Assessment'}
+        </button>
+        <p className="ep-submit-hint">Submits the completed assessment to the Admin portal. Photos are uploaded to the private assessment-evidence storage bucket when Storage policies allow it.</p>
+      </div>
+    </>
   );
 }
 
-function ActionBar({ clearAll, checkCompliance, submit, submitting }: any) {
+function ActionBar({ clearAll, backupJson, restoreJson }: any) {
   return (
     <div className="action-bar no-print">
       <button className="action-btn clear" onClick={clearAll}>Clear All</button>
-      <button className="action-btn" onClick={checkCompliance}>Check Compliance</button>
+      <button className="action-btn clear json-backup-btn" onClick={backupJson}>Backup JSON</button>
+      <label className="action-btn clear json-restore-btn" style={{ cursor: 'pointer' }}>Restore JSON
+        <input type="file" accept="application/json" style={{ display: 'none' }} onChange={restoreJson} />
+      </label>
       <button className="action-btn export" onClick={() => window.print()}>Export / Print</button>
-      <button className="action-btn export" disabled={submitting} onClick={submit}>{submitting ? 'Submitting…' : 'Submit Assessment'}</button>
     </div>
   );
 }
@@ -418,7 +465,7 @@ function SiteInfo({ open, toggle, fields, setField, ops, setOps, locateMe, looku
         <div className="field-group"><label>Site Name / ID</label><input value={fields.siteName || ''} onChange={e => setField('siteName', e.target.value)} /></div>
         <div className="map-container">
           <label>Location</label>
-          <div className="map-wrap"><div id="locationMap"></div><button className="map-locate-btn" onClick={locateMe}>📍 MY LOCATION</button></div>
+          <div className="map-wrap" style={{ isolation: 'isolate', position: 'relative', zIndex: 0 }}><div id="locationMap"></div><button className="map-locate-btn" onClick={locateMe}>📍 MY LOCATION</button></div>
           <div className="map-coords-row">
             <div className="field-group"><label>Latitude</label><input value={fields.mapLat || ''} onChange={e => setField('mapLat', e.target.value)} placeholder="e.g. 35.8456" /></div>
             <div className="field-group"><label>Longitude</label><input value={fields.mapLng || ''} onChange={e => setField('mapLng', e.target.value)} placeholder="e.g. -86.3903" /></div>
@@ -491,36 +538,19 @@ function AutoDate({ fields, setField }: any) {
     </>
   );
 }
-function C2({ fields, setField, rows, setRows }: any) {
-  function upd(i: number, k: keyof C2Row, v: string) { setRows((r: C2Row[]) => r.map((row, idx) => idx === i ? { ...row, [k]: v } : row)); }
+function C2({ fields, setField }: any) {
   return (
     <>
       <div className="section-divider" />
-      <div className="fg-label">C2 VALIDATION TEST RESULTS</div>
-      <p style={{ fontSize: '.78rem', color: 'var(--ep-gray)', marginBottom: 10 }}>Thresholds: RSSI &gt;= -90 dBm | Latency &lt;= 400ms | Packet Loss &lt;= 5%</p>
-      <div style={{ overflowX: 'auto' }}>
-        <table className="c2-table">
-          <thead><tr><th>Route Segment</th><th>RSSI Min (dBm)</th><th>Latency Max (ms)</th><th>Pkt Loss (%)</th><th>Result</th></tr></thead>
-          <tbody>
-            {rows.map((r: C2Row, i: number) => (
-              <tr key={i}>
-                <td><input value={r.segment} onChange={e => upd(i, 'segment', e.target.value)} placeholder={`Segment ${i + 1}`} /></td>
-                <td><input type="number" value={r.rssi} onChange={e => upd(i, 'rssi', e.target.value)} placeholder="-82" /></td>
-                <td><input type="number" value={r.latency} onChange={e => upd(i, 'latency', e.target.value)} placeholder="210" /></td>
-                <td><input type="number" step="0.1" value={r.packetLoss} onChange={e => upd(i, 'packetLoss', e.target.value)} placeholder="1.2" /></td>
-                <td><select value={r.result} onChange={e => upd(i, 'result', e.target.value)}><option value="">—</option><option>PASS</option><option>FAIL</option></select></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="field-group">
+        <label>C2 Validation Result</label>
+        <select value={fields.c2OverallResult || ''} onChange={e => setField('c2OverallResult', e.target.value)}>
+          <option value="">— Select —</option>
+          <option>PASS</option>
+          <option>FAIL</option>
+          <option>CONDITIONAL</option>
+        </select>
       </div>
-      <button className="c2-add-row" onClick={() => setRows((r: C2Row[]) => [...r, { segment: '', rssi: '', latency: '', packetLoss: '', result: '' }])}>+ ADD SEGMENT</button>
-      <div className="field-row" style={{ marginTop: 14 }}>
-        <div className="field-group"><label>Test Date</label><input type="date" value={fields.c2TestDate || ''} onChange={e => setField('c2TestDate', e.target.value)} /></div>
-        <div className="field-group"><label>Tested By</label><input value={fields.c2TestedBy || ''} onChange={e => setField('c2TestedBy', e.target.value)} /></div>
-      </div>
-      <div className="field-group"><label>Environmental Conditions During Test</label><textarea value={fields.c2Environment || ''} onChange={e => setField('c2Environment', e.target.value)} placeholder="Weather, time of day, interference sources..." /></div>
-      <div className="field-group"><label>C2 Validation Overall Result</label><select value={fields.c2OverallResult || ''} onChange={e => setField('c2OverallResult', e.target.value)}><option value="">— Select —</option><option>PASS</option><option>FAIL</option><option>CONDITIONAL</option></select></div>
     </>
   );
 }
