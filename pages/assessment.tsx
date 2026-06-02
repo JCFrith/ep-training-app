@@ -124,25 +124,39 @@ export default function Assessment() {
     flash('Assessment cleared');
   }
 
-  async function loadLeaflet() {
-    if (window.L) return;
-    const link = document.createElement('link');
-    link.rel = 'stylesheet'; link.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';
-    document.head.appendChild(link);
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';
-    s.onload = () => initMap();
-    document.body.appendChild(s);
+  function loadLeaflet() {
+    // Ensure Leaflet CSS + JS are present, then init the map once ready.
+    // Polls for window.L so we never race a single onload/timeout.
+    if (!document.getElementById('leaflet-css')) {
+      const link = document.createElement('link');
+      link.id = 'leaflet-css'; link.rel = 'stylesheet';
+      link.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';
+      document.head.appendChild(link);
+    }
+    if (!window.L && !document.getElementById('leaflet-js')) {
+      const s = document.createElement('script');
+      s.id = 'leaflet-js';
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';
+      document.body.appendChild(s);
+    }
+    const start = Date.now();
+    const poll = setInterval(() => {
+      if (window.L) { clearInterval(poll); initMap(); }
+      else if (Date.now() - start > 10000) clearInterval(poll);
+    }, 100);
   }
   function initMap() {
-    if (!window.L || !document.getElementById('locationMap')) return;
-    mapRef.current?.remove();
+    if (!window.L) return;
+    const div = document.getElementById('locationMap');
+    if (!div) return;
+    // Idempotent: if the map already exists, just refresh its size (e.g. after the section reopens).
+    if (mapRef.current) { setTimeout(() => mapRef.current?.invalidateSize(), 50); return; }
     const lat = parseFloat(fields.mapLat) || 35.71, lng = parseFloat(fields.mapLng) || -86.4;
     mapRef.current = window.L.map('locationMap', { center: [lat, lng], zoom: fields.mapLat ? 17 : 10, attributionControl: false });
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20 }).addTo(mapRef.current);
     if (fields.mapLat) placeMarker(lat, lng, false);
     mapRef.current.on('click', (e: any) => placeMarker(e.latlng.lat, e.latlng.lng, true));
-    setTimeout(() => mapRef.current?.invalidateSize(), 100);
+    setTimeout(() => mapRef.current?.invalidateSize(), 200);
   }
   function mkIcon() {
     return window.L.divIcon({ className: '', html: '<div style="width:30px;height:30px;position:relative"><div style="width:20px;height:20px;background:#FCC00E;border:3px solid #164998;border-radius:50%;position:absolute;top:0;left:5px;box-shadow:0 2px 6px #0008"></div><div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:10px solid #164998;position:absolute;top:17px;left:9px"></div></div>', iconSize: [30, 30], iconAnchor: [15, 30] });
