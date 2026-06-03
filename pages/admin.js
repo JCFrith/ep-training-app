@@ -3,6 +3,14 @@ import { useRouter } from 'next/router';
 import { supabase, getSessionUser } from '../lib/supabase';
 import AssessmentDetail from '../lib/AssessmentDetail';
 import QuizResultDetail from '../lib/QuizResultDetail';
+import { buildExamPdf, buildAssessmentPdf } from '../lib/pdf';
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
 
 const ASSESSMENT_LIST_COLS = 'id, assessment_id, site_name, site_address, latitude, longitude, assessment_type, assessment_date, assessor, rpic_reviewer, launch_method, operation_types, c2_validation_result, risk_level, oop_oomv_exposure, coa_waiver_determination, program_review_required, failed_rule_ids, corrective_actions, operating_conditions, reassessment_date, rule_matrix_version, photo_count, submitted_by, submitted_at, status';
 
@@ -95,35 +103,15 @@ export default function Admin() {
     const a = document.createElement('a'); a.href = url; a.download = `ep-exam-results-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
-  async function buildExamPdf(mods, r) {
-    const { JsPDF, renderToStaticMarkup } = mods;
+  async function examPdfDoc(r) {
     const { data: ans } = await supabase.from('quiz_answers').select('*').eq('result_id', r.id).order('question_id', { ascending: true });
-    const html = renderToStaticMarkup(<QuizResultDetail record={r} answers={ans || []} plainLogo />);
-    const holder = document.createElement('div');
-    holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:760px;background:#fff;padding:24px;';
-    holder.innerHTML = html;
-    document.body.appendChild(holder);
-    await new Promise(res => setTimeout(res, 50));
-    const pdf = new JsPDF('p', 'pt', 'letter');
-    await new Promise((resolve) => pdf.html(holder, { x: 24, y: 24, width: 540, windowWidth: 760, autoPaging: 'text', callback: () => resolve() }));
-    holder.remove();
-    return pdf;
-  }
-  async function loadExamPdfMods() {
-    const renderToStaticMarkup = (await import('react-dom/server')).renderToStaticMarkup;
-    const jsPDFmod = await import('jspdf');
-    const JsPDF = jsPDFmod.jsPDF || jsPDFmod.default;
-    await import('html2canvas');
-    return { renderToStaticMarkup, JsPDF };
+    return buildExamPdf(r, ans || []);
   }
   async function exportSingleExamPdf(r) {
     setExamBusy('Rendering…');
     try {
-      const mods = await loadExamPdfMods();
-      const pdf = await buildExamPdf(mods, r);
-      const url = URL.createObjectURL(pdf.output('blob'));
-      const a = document.createElement('a'); a.href = url; a.download = examFileName(r);
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      const pdf = await examPdfDoc(r);
+      downloadBlob(pdf.output('blob'), examFileName(r));
     } catch (e) { alert('Could not export exam PDF: ' + (e?.message || e)); }
     finally { setExamBusy(''); }
   }
@@ -131,20 +119,17 @@ export default function Admin() {
     if (!examChecked.length) return;
     setExamBusy('Loading…');
     try {
-      const mods = await loadExamPdfMods();
       const JSZip = (await import('jszip')).default;
       const rows = examChecked.map(id => results.find(r => r.id === id)).filter(Boolean);
       const zip = new JSZip();
       for (let i = 0; i < rows.length; i++) {
         setExamBusy(`Rendering ${i + 1}/${rows.length}…`);
-        const pdf = await buildExamPdf(mods, rows[i]);
+        const pdf = await examPdfDoc(rows[i]);
         zip.file(examFileName(rows[i]), pdf.output('blob'));
       }
       setExamBusy('Zipping…');
       const blob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `ep-exams-${new Date().toISOString().slice(0, 10)}.zip`;
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      downloadBlob(blob, `ep-exams-${new Date().toISOString().slice(0, 10)}.zip`);
     } catch (e) { alert('Could not export exams: ' + (e?.message || e)); }
     finally { setExamBusy(''); }
   }
@@ -177,7 +162,20 @@ export default function Admin() {
     window.open(`/print?ids=${ids.join(',')}`, '_blank');
   }
 
-  // Bulk: render each selected assessment to its own PDF and bundle into one ZIP download.
+  function assessmentFileName(r) {
+    const site = String(r.site_name || r.assessment_id || 'assessment').replace(/[^a-z0-9._-]+/gi, '-');
+    return `${String(r.assessment_id || r.id).replace(/[^a-z0-9._-]+/gi, '-')}_${site}.pdf`;
+  }
+  async function exportSingleAssessmentPdf(a) {
+    setPdfBusy('Rendering…');
+    try {
+      const { data } = await supabase.from('assessments').select('*').eq('id', a.id).single();
+      const pdf = await buildAssessmentPdf(data || a);
+      downloadBlob(pdf.output('blob'), assessmentFileName(data || a));
+    } catch (e) { alert('Could not export PDF: ' + (e?.message || e)); }
+    finally { setPdfBusy(''); }
+  }
+  // Bulk: render each selected assessment to its own PDF, bundle into one ZIP.
   async function exportSelectedPdfsZip() {
     if (!checkedIds.length) return;
     setPdfBusy('Loading…');
@@ -185,38 +183,16 @@ export default function Admin() {
       const { data, error } = await supabase.from('assessments').select('*').in('id', checkedIds);
       if (error || !data) throw new Error(error?.message || 'Failed to load assessments');
       const ordered = checkedIds.map(id => data.find(d => d.id === id)).filter(Boolean);
-
-      const { renderToStaticMarkup } = await import('react-dom/server');
-      const jsPDFmod = await import('jspdf');
-      const JsPDF = jsPDFmod.jsPDF || jsPDFmod.default;
       const JSZip = (await import('jszip')).default;
-      await import('html2canvas');
       const zip = new JSZip();
-
       for (let i = 0; i < ordered.length; i++) {
-        const r = ordered[i];
         setPdfBusy(`Rendering ${i + 1}/${ordered.length}…`);
-        const html = renderToStaticMarkup(<AssessmentDetail record={r} plainLogo />);
-        const holder = document.createElement('div');
-        holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:760px;background:#fff;padding:24px;';
-        holder.innerHTML = html;
-        document.body.appendChild(holder);
-        await new Promise(res => setTimeout(res, 50));
-        const pdf = new JsPDF('p', 'pt', 'letter');
-        await new Promise((resolve) => {
-          pdf.html(holder, { x: 24, y: 24, width: 540, windowWidth: 760, autoPaging: 'text', callback: () => resolve() });
-        });
-        const safe = String(r.assessment_id || r.id).replace(/[^a-z0-9._-]+/gi, '-');
-        zip.file(`${safe}.pdf`, pdf.output('blob'));
-        holder.remove();
+        const pdf = await buildAssessmentPdf(ordered[i]);
+        zip.file(assessmentFileName(ordered[i]), pdf.output('blob'));
       }
-
       setPdfBusy('Zipping…');
       const blob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `ep-assessments-${new Date().toISOString().slice(0, 10)}.zip`;
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      downloadBlob(blob, `ep-assessments-${new Date().toISOString().slice(0, 10)}.zip`);
     } catch (e) {
       alert('Could not export PDFs: ' + (e?.message || e));
     } finally {
@@ -450,7 +426,7 @@ export default function Admin() {
                     <td>{a.photo_count || 0}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer' }} onClick={() => viewAssessment(a)}>View</span>
-                      <span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer', marginLeft: 12 }} onClick={() => openPdf([a.id])}>PDF</span>
+                      <span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer', marginLeft: 12 }} onClick={() => exportSingleAssessmentPdf(a)}>PDF</span>
                     </td>
                   </tr>
                 ))}
