@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { supabase, getSessionUser } from '../lib/supabase';
 import AssessmentDetail from '../lib/AssessmentDetail';
+import QuizResultDetail from '../lib/QuizResultDetail';
 
 const ASSESSMENT_LIST_COLS = 'id, assessment_id, site_name, site_address, latitude, longitude, assessment_type, assessment_date, assessor, rpic_reviewer, launch_method, operation_types, c2_validation_result, risk_level, oop_oomv_exposure, coa_waiver_determination, program_review_required, failed_rule_ids, corrective_actions, operating_conditions, reassessment_date, rule_matrix_version, photo_count, submitted_by, submitted_at, status';
 
@@ -14,6 +15,11 @@ export default function Admin() {
   const [filterName, setFilterName] = useState('');
   const [filterQuiz, setFilterQuiz] = useState('all');
   const [filterDate, setFilterDate] = useState('');
+  // Exam results selection / detail
+  const [examChecked, setExamChecked] = useState([]);
+  const [examBusy, setExamBusy] = useState('');
+  const [selectedExam, setSelectedExam] = useState(null);
+  const [examAnswers, setExamAnswers] = useState(null);
   // Create user
   const [newUser, setNewUser] = useState('');
   const [newPass, setNewPass] = useState('');
@@ -54,6 +60,93 @@ export default function Admin() {
   async function loadUsers() {
     const { data } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
     if (data) setUsers(data);
+  }
+
+  // ---- Exam results: view, CSV, PDF ----
+  function toggleExamChecked(id) {
+    setExamChecked(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+  function toggleAllExams() {
+    const visible = filteredResults.map(r => r.id);
+    const allSel = visible.length > 0 && visible.every(id => examChecked.includes(id));
+    setExamChecked(allSel ? [] : visible);
+  }
+  async function viewResult(r) {
+    setSelectedExam(r);
+    setExamAnswers(null);
+    const { data } = await supabase.from('quiz_answers').select('*').eq('result_id', r.id).order('question_id', { ascending: true });
+    setExamAnswers(data || []);
+  }
+  function quizName(t) { return t === 'ep-rpic' ? 'EP RPIC Exam' : t === 'thp-deployer' ? 'THP Deployer Exam' : (t || 'Exam'); }
+  function examFileName(r) {
+    const name = (r.profiles?.display_name || 'student').replace(/[^a-z0-9._-]+/gi, '-');
+    const d = r.completed_at ? new Date(r.completed_at).toISOString().slice(0, 10) : '';
+    return `${r.quiz_type || 'exam'}_${name}_${d}_${String(r.id).slice(0, 8)}.pdf`;
+  }
+  function exportResultsCsv() {
+    const rows = examChecked.length ? filteredResults.filter(r => examChecked.includes(r.id)) : filteredResults;
+    if (!rows.length) return;
+    const header = ['Student', 'Username', 'Exam', 'Score', 'Total', 'Percentage', 'Result', 'Date'];
+    const esc = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = rows.map(r => [r.profiles?.display_name || '', r.profiles?.username || '', quizName(r.quiz_type), r.score, r.total, (r.percentage != null ? r.percentage + '%' : ''), r.passed ? 'PASS' : 'FAIL', r.completed_at ? new Date(r.completed_at).toLocaleString() : ''].map(esc).join(','));
+    const csv = header.join(',') + '\n' + lines.join('\n') + '\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `ep-exam-results-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }
+  async function buildExamPdf(mods, r) {
+    const { JsPDF, renderToStaticMarkup } = mods;
+    const { data: ans } = await supabase.from('quiz_answers').select('*').eq('result_id', r.id).order('question_id', { ascending: true });
+    const html = renderToStaticMarkup(<QuizResultDetail record={r} answers={ans || []} plainLogo />);
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:760px;background:#fff;padding:24px;';
+    holder.innerHTML = html;
+    document.body.appendChild(holder);
+    await new Promise(res => setTimeout(res, 50));
+    const pdf = new JsPDF('p', 'pt', 'letter');
+    await new Promise((resolve) => pdf.html(holder, { x: 24, y: 24, width: 540, windowWidth: 760, autoPaging: 'text', callback: () => resolve() }));
+    holder.remove();
+    return pdf;
+  }
+  async function loadExamPdfMods() {
+    const renderToStaticMarkup = (await import('react-dom/server')).renderToStaticMarkup;
+    const jsPDFmod = await import('jspdf');
+    const JsPDF = jsPDFmod.jsPDF || jsPDFmod.default;
+    await import('html2canvas');
+    return { renderToStaticMarkup, JsPDF };
+  }
+  async function exportSingleExamPdf(r) {
+    setExamBusy('Rendering…');
+    try {
+      const mods = await loadExamPdfMods();
+      const pdf = await buildExamPdf(mods, r);
+      const url = URL.createObjectURL(pdf.output('blob'));
+      const a = document.createElement('a'); a.href = url; a.download = examFileName(r);
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch (e) { alert('Could not export exam PDF: ' + (e?.message || e)); }
+    finally { setExamBusy(''); }
+  }
+  async function exportSelectedExamPdfsZip() {
+    if (!examChecked.length) return;
+    setExamBusy('Loading…');
+    try {
+      const mods = await loadExamPdfMods();
+      const JSZip = (await import('jszip')).default;
+      const rows = examChecked.map(id => results.find(r => r.id === id)).filter(Boolean);
+      const zip = new JSZip();
+      for (let i = 0; i < rows.length; i++) {
+        setExamBusy(`Rendering ${i + 1}/${rows.length}…`);
+        const pdf = await buildExamPdf(mods, rows[i]);
+        zip.file(examFileName(rows[i]), pdf.output('blob'));
+      }
+      setExamBusy('Zipping…');
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `ep-exams-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch (e) { alert('Could not export exams: ' + (e?.message || e)); }
+    finally { setExamBusy(''); }
   }
 
   async function loadAssessments() {
@@ -262,24 +355,47 @@ export default function Admin() {
                 <option value="thp-deployer">THP Deployer</option>
               </select>
               <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
+              <button className="btn btn-navy" style={{ padding: '12px 18px' }} onClick={exportResultsCsv}>
+                Export CSV{examChecked.length ? ` (${examChecked.length})` : ''}
+              </button>
             </div>
-            <p style={{ color: 'var(--gray)', fontSize: 13, marginBottom: 8 }}>{filteredResults.length} result{filteredResults.length !== 1 ? 's' : ''}</p>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+              <span style={{ color: 'var(--gray)', fontSize: 13 }}>
+                {filteredResults.length} result{filteredResults.length !== 1 ? 's' : ''}{examChecked.length ? ` · ${examChecked.length} selected` : ''}
+              </span>
+              {examChecked.length > 0 && (
+                <>
+                  <button className="btn btn-gold" style={{ padding: '8px 16px', fontSize: 13 }} disabled={!!examBusy} onClick={exportSelectedExamPdfsZip}>{examBusy || `Export PDF (${examChecked.length})`}</button>
+                  <span className="logout" style={{ color: 'var(--gray)', cursor: 'pointer', fontSize: 13 }} onClick={() => setExamChecked([])}>Clear</span>
+                </>
+              )}
+            </div>
+
             <table className="admin-table">
               <thead>
-                <tr><th>Name</th><th>Quiz</th><th>Score</th><th>%</th><th>Result</th><th>Date</th></tr>
+                <tr>
+                  <th style={{ width: 34 }}><input type="checkbox" checked={filteredResults.length > 0 && filteredResults.every(r => examChecked.includes(r.id))} onChange={toggleAllExams} /></th>
+                  <th>Name</th><th>Quiz</th><th>Score</th><th>%</th><th>Result</th><th>Date</th><th></th>
+                </tr>
               </thead>
               <tbody>
                 {filteredResults.map(r => (
                   <tr key={r.id}>
+                    <td><input type="checkbox" checked={examChecked.includes(r.id)} onChange={() => toggleExamChecked(r.id)} /></td>
                     <td>{r.profiles?.display_name || '—'}</td>
                     <td>{r.quiz_type === 'ep-rpic' ? 'EP RPIC' : 'THP Deployer'}</td>
                     <td>{r.score}/{r.total}</td>
                     <td>{r.percentage}%</td>
                     <td><span className={r.passed ? 'pass-badge' : 'fail-badge'}>{r.passed ? 'PASS' : 'FAIL'}</span></td>
                     <td>{new Date(r.completed_at).toLocaleDateString()}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer' }} onClick={() => viewResult(r)}>View</span>
+                      <span className="logout" style={{ color: 'var(--blue)', cursor: 'pointer', marginLeft: 12 }} onClick={() => exportSingleExamPdf(r)}>PDF</span>
+                    </td>
                   </tr>
                 ))}
-                {filteredResults.length === 0 && <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--gray)' }}>No results found</td></tr>}
+                {filteredResults.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--gray)' }}>No results found</td></tr>}
               </tbody>
             </table>
           </div>
@@ -396,6 +512,22 @@ export default function Admin() {
               <p style={{ color: 'var(--gray)' }}>Loading full assessment…</p>
             ) : (
               <AssessmentDetail record={selected} />
+            )}
+          </div>
+        </div>
+      )}
+
+      {selectedExam && (
+        <div onClick={() => setSelectedExam(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(11,25,35,0.7)', zIndex: 200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflowY: 'auto' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--white)', borderRadius: 12, maxWidth: 820, width: '100%', padding: 28 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, position: 'sticky', top: 0, background: '#fff', paddingBottom: 8 }}>
+              <button className="btn btn-gold" style={{ padding: '8px 16px', fontSize: 13 }} disabled={!!examBusy} onClick={() => exportSingleExamPdf(selectedExam)}>{examBusy || 'Export PDF'}</button>
+              <span className="logout" style={{ color: 'var(--navy)', cursor: 'pointer', fontSize: 24, lineHeight: 1 }} onClick={() => setSelectedExam(null)}>×</span>
+            </div>
+            {examAnswers === null ? (
+              <p style={{ color: 'var(--gray)' }}>Loading exam…</p>
+            ) : (
+              <QuizResultDetail record={selectedExam} answers={examAnswers} />
             )}
           </div>
         </div>
