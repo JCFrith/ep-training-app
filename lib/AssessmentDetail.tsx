@@ -8,7 +8,7 @@ function statusLabel(v: string) {
   return { text: 'Not checked', color: '#C62828', bg: '#FFEBEE' };
 }
 
-export default function AssessmentDetail({ record }: any) {
+export default function AssessmentDetail({ record, plainLogo }: any) {
   const fa = record?.full_assessment || {};
   const fields = fa.fields || {};
   const checks = fa.checks || {};
@@ -48,7 +48,9 @@ export default function AssessmentDetail({ record }: any) {
     <div className="assessment-detail" style={{ color: '#111', fontFamily: "'Segoe UI', Arial, sans-serif" }}>
       {/* Letterhead */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, borderBottom: '2px solid #164998', paddingBottom: 12, marginBottom: 12 }}>
-        <img src={LOGO} alt="Enhanced Patrol" style={{ height: 46 }} />
+        {plainLogo
+          ? <div style={{ fontWeight: 900, color: '#0B1923', fontSize: 20, letterSpacing: 1 }}>ENHANCED PATROL</div>
+          : <img src={LOGO} alt="Enhanced Patrol" style={{ height: 46 }} crossOrigin="anonymous" />}
         <div>
           <div style={{ fontWeight: 800, color: '#0B1923', fontSize: 18 }}>BVLOS Site Assessment</div>
           <div style={{ color: '#555', fontSize: 12 }}>Enhanced Patrol LLC &bull; Nationwide BVLOS Waiver &bull; Confidential</div>

@@ -5,8 +5,7 @@ import { supabase, getSessionUser } from '../lib/supabase';
 import AssessmentDetail from '../lib/AssessmentDetail';
 
 // Read-only printable view of one or more submitted assessments.
-// /print?id=<uuid>            -> single assessment
-// /print?ids=<uuid>,<uuid>... -> multiple (each starts on a new page) for a combined PDF
+// /print?id=<uuid>  (or ?ids=a,b,c) -> renders and auto-opens the print dialog (Save as PDF).
 export default function PrintAssessments() {
   const router = useRouter();
   const [records, setRecords] = useState<any[]>([]);
@@ -18,23 +17,20 @@ export default function PrintAssessments() {
       const user = await getSessionUser();
       if (!user) { router.push('/login'); return; }
 
-      const single = router.query.id ? [String(router.query.id)] : [];
+      const one = router.query.id ? [String(router.query.id)] : [];
       const many = router.query.ids ? String(router.query.ids).split(',').filter(Boolean) : [];
-      const ids = [...single, ...many];
+      const ids = [...one, ...many];
       if (!ids.length) { setStatus('No assessment specified.'); return; }
 
       const { data, error } = await supabase.from('assessments').select('*').in('id', ids);
       if (error) { setStatus('Error loading: ' + error.message); return; }
       if (!data || !data.length) { setStatus('Assessment not found (or you do not have access).'); return; }
-
-      // Preserve the order the ids were requested in
       const ordered = ids.map(id => data.find((d: any) => d.id === id)).filter(Boolean);
       setRecords(ordered);
       setStatus('');
     })();
   }, [router.isReady]);
 
-  // Auto-open the print dialog once records + their images have rendered.
   useEffect(() => {
     if (!records.length) return;
     const t = setTimeout(() => { try { window.print(); } catch (e) {} }, 900);
@@ -48,7 +44,7 @@ export default function PrintAssessments() {
         :root { color-scheme: light; }
         html, body { background: #fff; margin: 0; }
         .print-wrap { max-width: 880px; margin: 0 auto; padding: 24px; }
-        .print-toolbar { position: sticky; top: 0; background: #0B1923; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+        .print-toolbar { position: sticky; top: 0; background: #0B1923; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; z-index: 10; }
         .print-toolbar button { background: #FCC00E; color: #0B1923; border: none; padding: 8px 16px; font-weight: 700; border-radius: 6px; cursor: pointer; }
         .doc { page-break-after: always; }
         .doc:last-child { page-break-after: auto; }

@@ -28,6 +28,7 @@ export default function Admin() {
   const [selected, setSelected] = useState(null);
   const [checkedIds, setCheckedIds] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState('');
 
   useEffect(() => {
     getSessionUser().then((u) => {
@@ -81,6 +82,53 @@ export default function Admin() {
   function openPdf(ids) {
     if (!ids.length) return;
     window.open(`/print?ids=${ids.join(',')}`, '_blank');
+  }
+
+  // Bulk: render each selected assessment to its own PDF and bundle into one ZIP download.
+  async function exportSelectedPdfsZip() {
+    if (!checkedIds.length) return;
+    setPdfBusy('Loading…');
+    try {
+      const { data, error } = await supabase.from('assessments').select('*').in('id', checkedIds);
+      if (error || !data) throw new Error(error?.message || 'Failed to load assessments');
+      const ordered = checkedIds.map(id => data.find(d => d.id === id)).filter(Boolean);
+
+      const { renderToStaticMarkup } = await import('react-dom/server');
+      const jsPDFmod = await import('jspdf');
+      const JsPDF = jsPDFmod.jsPDF || jsPDFmod.default;
+      const JSZip = (await import('jszip')).default;
+      await import('html2canvas');
+      const zip = new JSZip();
+
+      for (let i = 0; i < ordered.length; i++) {
+        const r = ordered[i];
+        setPdfBusy(`Rendering ${i + 1}/${ordered.length}…`);
+        const html = renderToStaticMarkup(<AssessmentDetail record={r} plainLogo />);
+        const holder = document.createElement('div');
+        holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:760px;background:#fff;padding:24px;';
+        holder.innerHTML = html;
+        document.body.appendChild(holder);
+        await new Promise(res => setTimeout(res, 50));
+        const pdf = new JsPDF('p', 'pt', 'letter');
+        await new Promise((resolve) => {
+          pdf.html(holder, { x: 24, y: 24, width: 540, windowWidth: 760, autoPaging: 'text', callback: () => resolve() });
+        });
+        const safe = String(r.assessment_id || r.id).replace(/[^a-z0-9._-]+/gi, '-');
+        zip.file(`${safe}.pdf`, pdf.output('blob'));
+        holder.remove();
+      }
+
+      setPdfBusy('Zipping…');
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `ep-assessments-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Could not export PDFs: ' + (e?.message || e));
+    } finally {
+      setPdfBusy('');
+    }
   }
   async function bulkDelete() {
     if (!checkedIds.length) return;
@@ -259,7 +307,7 @@ export default function Admin() {
               </span>
               {checkedIds.length > 0 && (
                 <>
-                  <button className="btn btn-gold" style={{ padding: '8px 16px', fontSize: 13 }} onClick={() => openPdf(checkedIds)}>Export PDF ({checkedIds.length})</button>
+                  <button className="btn btn-gold" style={{ padding: '8px 16px', fontSize: 13 }} disabled={!!pdfBusy} onClick={exportSelectedPdfsZip}>{pdfBusy || `Export PDF (${checkedIds.length})`}</button>
                   <button className="btn btn-red" style={{ padding: '8px 16px', fontSize: 13 }} disabled={busy} onClick={bulkDelete}>{busy ? 'Deleting…' : `Delete Selected (${checkedIds.length})`}</button>
                   <span className="logout" style={{ color: 'var(--gray)', cursor: 'pointer', fontSize: 13 }} onClick={() => setCheckedIds([])}>Clear</span>
                 </>
