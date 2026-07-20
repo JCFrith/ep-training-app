@@ -5,6 +5,18 @@ import AssessmentDetail from '../lib/AssessmentDetail';
 import QuizResultDetail from '../lib/QuizResultDetail';
 import { buildExamPdf, buildAssessmentPdf } from '../lib/pdf';
 
+// Every admin API route requires the caller's access token.
+async function adminFetch(url, body) {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  return { res, json: await res.json() };
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -33,8 +45,17 @@ export default function Admin() {
   const [newPass, setNewPass] = useState('');
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState('user');
+  const [newEmail, setNewEmail] = useState('');
   const [createMsg, setCreateMsg] = useState(null);
   const [creating, setCreating] = useState(false);
+  // Account + password-reset request queue
+  const [requests, setRequests] = useState([]);
+  const [approving, setApproving] = useState(null);
+  const [reqMsg, setReqMsg] = useState(null);
+  const [reqBusy, setReqBusy] = useState(false);
+  const [resetting, setResetting] = useState(null);
+  const [resetPass, setResetPass] = useState('');
+  const [userMsg, setUserMsg] = useState(null);
   // Site assessments
   const [assessments, setAssessments] = useState([]);
   const [aFilterSite, setAFilterSite] = useState('');
@@ -53,6 +74,7 @@ export default function Admin() {
         loadResults();
         loadUsers();
         loadAssessments();
+        loadRequests();
       });
     });
   }, []);
@@ -68,6 +90,84 @@ export default function Admin() {
   async function loadUsers() {
     const { data } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
     if (data) setUsers(data);
+  }
+
+  // ---- Account requests + password resets ----
+  async function loadRequests() {
+    const { data } = await supabase.from('admin_requests')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (data) setRequests(data);
+  }
+
+  // Approving an account request means actually creating the user.
+  async function handleApprove(e) {
+    e.preventDefault();
+    setReqMsg(null);
+    setReqBusy(true);
+    const { res, json } = await adminFetch('/api/create-user', {
+      username: approving.username.trim(),
+      password: approving.password,
+      displayName: approving.full_name,
+      email: approving.email,
+      role: approving.role,
+      requestId: approving.id,
+    });
+    if (res.ok) {
+      setReqMsg({ type: 'success', text: `Account created for ${approving.full_name}. They sign in with ${approving.email}.` });
+      setApproving(null);
+      loadRequests();
+      loadUsers();
+    } else {
+      setReqMsg({ type: 'error', text: json.error || 'Failed to create account.' });
+    }
+    setReqBusy(false);
+  }
+
+  async function handleDeny(request) {
+    if (!confirm(`Deny the request from ${request.full_name || request.email}?`)) return;
+    setReqBusy(true);
+    const { res, json } = await adminFetch('/api/review-request', { requestId: request.id, status: 'denied' });
+    setReqMsg(res.ok
+      ? { type: 'success', text: 'Request denied.' }
+      : { type: 'error', text: json.error || 'Failed to deny request.' });
+    loadRequests();
+    setReqBusy(false);
+  }
+
+  // A password_reset request names the account's username in `note`.
+  function handleResetFromRequest(request) {
+    const target = users.find(u => u.username?.toLowerCase() === String(request.note || '').toLowerCase());
+    if (!target) { setReqMsg({ type: 'error', text: 'Could not find that user.' }); return; }
+    setTab('users');
+    setResetting(target);
+    setResetPass('');
+    setUserMsg({ type: 'success', text: `Set a new password for ${target.display_name}, then contact them at ${request.email}.` });
+  }
+
+  async function handleSetPassword(e) {
+    e.preventDefault();
+    setUserMsg(null);
+    setReqBusy(true);
+    const pendingReset = requests.find(r =>
+      r.kind === 'password_reset' && r.status === 'pending' &&
+      String(r.note || '').toLowerCase() === resetting.username?.toLowerCase()
+    );
+    const { res, json } = await adminFetch('/api/set-password', {
+      userId: resetting.id,
+      password: resetPass,
+      requestId: pendingReset?.id || null,
+    });
+    if (res.ok) {
+      setUserMsg({ type: 'success', text: `Password updated for ${resetting.display_name}.` });
+      setResetting(null);
+      setResetPass('');
+      loadRequests();
+    } else {
+      setUserMsg({ type: 'error', text: json.error || 'Failed to update password.' });
+    }
+    setReqBusy(false);
   }
 
   // ---- Exam results: view, CSV, PDF ----
@@ -253,15 +353,17 @@ export default function Admin() {
     e.preventDefault();
     setCreateMsg(null);
     setCreating(true);
-    const res = await fetch('/api/create-user', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: newUser.trim(), password: newPass, displayName: newName.trim(), role: newRole }),
+    const { res, json } = await adminFetch('/api/create-user', {
+      username: newUser.trim(),
+      password: newPass,
+      displayName: newName.trim(),
+      email: newEmail.trim(),
+      role: newRole,
     });
-    const json = await res.json();
     if (res.ok) {
-      setCreateMsg({ type: 'success', text: `User "${newUser.trim()}" created successfully.` });
-      setNewUser(''); setNewPass(''); setNewName(''); setNewRole('user');
+      const signIn = String(json.signInWith || '').replace('@ep-training.local', '');
+      setCreateMsg({ type: 'success', text: `User created. They sign in with: ${signIn}` });
+      setNewUser(''); setNewPass(''); setNewName(''); setNewEmail(''); setNewRole('user');
       loadUsers();
     } else {
       setCreateMsg({ type: 'error', text: json.error || 'Failed to create user.' });
@@ -299,6 +401,9 @@ export default function Admin() {
     router.push('/login');
   }
 
+  const pending = requests.filter(r => r.status === 'pending');
+  const reviewed = requests.filter(r => r.status !== 'pending');
+
   if (!profile) return <div className="page-center"><div className="card"><p>Loading...</p></div></div>;
 
   return (
@@ -317,6 +422,9 @@ export default function Admin() {
         <div className="tabs">
           <div className={`tab ${tab === 'results' ? 'active' : ''}`} onClick={() => setTab('results')}>Exam Results</div>
           <div className={`tab ${tab === 'assessments' ? 'active' : ''}`} onClick={() => setTab('assessments')}>Site Assessments</div>
+          <div className={`tab ${tab === 'requests' ? 'active' : ''}`} onClick={() => setTab('requests')}>
+            Requests{pending.length > 0 && <span className="badge-count">{pending.length}</span>}
+          </div>
           <div className={`tab ${tab === 'users' ? 'active' : ''}`} onClick={() => setTab('users')}>Users</div>
           <div className={`tab ${tab === 'create' ? 'active' : ''}`} onClick={() => setTab('create')}>Create User</div>
         </div>
@@ -438,20 +546,131 @@ export default function Admin() {
 
         {tab === 'users' && (
           <div>
+            {userMsg && <div className={`msg msg-${userMsg.type}`}>{userMsg.text}</div>}
+
+            {resetting && (
+              <div className="review-panel">
+                <h3 style={{ color: 'var(--navy)', marginBottom: 16 }}>New password for {resetting.display_name}</h3>
+                <form onSubmit={handleSetPassword}>
+                  <input type="text" placeholder="New password (min 6 characters)" value={resetPass} onChange={e => setResetPass(e.target.value)} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="submit" className="btn btn-gold" disabled={resetPass.length < 6 || reqBusy}>
+                      {reqBusy ? 'Saving...' : 'Set Password'}
+                    </button>
+                    <button type="button" className="btn btn-outline" onClick={() => { setResetting(null); setResetPass(''); }}>Cancel</button>
+                  </div>
+                </form>
+              </div>
+            )}
+
             <p style={{ color: 'var(--gray)', fontSize: 13, marginBottom: 8 }}>{users.length} user{users.length !== 1 ? 's' : ''}</p>
             <table className="admin-table">
-              <thead><tr><th>Username</th><th>Display Name</th><th>Role</th><th>Created</th></tr></thead>
+              <thead><tr><th>Username</th><th>Display Name</th><th>Signs in with</th><th>Role</th><th>Created</th><th>Action</th></tr></thead>
               <tbody>
                 {users.map(u => (
                   <tr key={u.id}>
                     <td>{u.username}</td>
                     <td>{u.display_name}</td>
+                    <td style={{ fontSize: 12 }}>{u.email || <span style={{ color: 'var(--gray)' }}>username only</span>}</td>
                     <td><span style={{ background: u.role === 'admin' ? 'var(--navy)' : 'var(--light)', color: u.role === 'admin' ? 'var(--gold)' : 'var(--dark)', padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 700 }}>{u.role}</span></td>
                     <td>{new Date(u.created_at).toLocaleDateString()}</td>
+                    <td>
+                      <button className="btn-mini btn-mini-gold"
+                        onClick={() => { setUserMsg(null); setResetting(u); setResetPass(''); }}>
+                        Reset password
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {tab === 'requests' && (
+          <div>
+            {reqMsg && <div className={`msg msg-${reqMsg.type}`}>{reqMsg.text}</div>}
+
+            {approving && (
+              <div className="review-panel">
+                <h3 style={{ color: 'var(--navy)', marginBottom: 4 }}>Approve: {approving.full_name}</h3>
+                <p style={{ color: 'var(--gray)', fontSize: 13, marginBottom: 16 }}>
+                  {approving.email} · {approving.phone}{approving.company ? ` · ${approving.company}` : ''}
+                </p>
+                <form onSubmit={handleApprove}>
+                  <input type="text" placeholder="Username (no spaces)" value={approving.username}
+                    onChange={e => setApproving({ ...approving, username: e.target.value.replace(/[\s@]/g, '') })} />
+                  <input type="text" placeholder="Temporary password (min 6 characters)" value={approving.password}
+                    onChange={e => setApproving({ ...approving, password: e.target.value })} />
+                  <select value={approving.role} onChange={e => setApproving({ ...approving, role: e.target.value })}>
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                  <p className="hint">They&apos;ll sign in with <strong>{approving.email}</strong> and can reset their own password by email.</p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="submit" className="btn btn-gold" disabled={!approving.username.trim() || approving.password.length < 6 || reqBusy}>
+                      {reqBusy ? 'Creating...' : 'Create Account'}
+                    </button>
+                    <button type="button" className="btn btn-outline" onClick={() => setApproving(null)}>Cancel</button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            <h3 style={{ color: 'var(--navy)', margin: '8px 0' }}>Pending ({pending.length})</h3>
+            <table className="admin-table">
+              <thead><tr><th>Type</th><th>Name</th><th>Email</th><th>Details</th><th>Received</th><th>Action</th></tr></thead>
+              <tbody>
+                {pending.map(r => (
+                  <tr key={r.id}>
+                    <td>{r.kind === 'account' ? 'New account' : 'Password reset'}</td>
+                    <td>{r.full_name || '—'}</td>
+                    <td>{r.email}</td>
+                    <td style={{ maxWidth: 240, fontSize: 12, color: 'var(--gray)' }}>
+                      {r.kind === 'account'
+                        ? [r.phone, r.company, r.note].filter(Boolean).join(' · ') || '—'
+                        : `username: ${r.note}`}
+                    </td>
+                    <td>{new Date(r.created_at).toLocaleDateString()}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {r.kind === 'account' ? (
+                        <button className="btn-mini btn-mini-gold" disabled={reqBusy}
+                          onClick={() => { setReqMsg(null); setApproving({ ...r, username: '', password: '', role: 'user' }); }}>
+                          Approve
+                        </button>
+                      ) : (
+                        <button className="btn-mini btn-mini-gold" disabled={reqBusy}
+                          onClick={() => handleResetFromRequest(r)}>
+                          Set password
+                        </button>
+                      )}
+                      <button className="btn-mini btn-mini-red" disabled={reqBusy} onClick={() => handleDeny(r)}>Deny</button>
+                    </td>
+                  </tr>
+                ))}
+                {pending.length === 0 && <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--gray)' }}>No pending requests</td></tr>}
+              </tbody>
+            </table>
+
+            {reviewed.length > 0 && (
+              <>
+                <h3 style={{ color: 'var(--navy)', margin: '32px 0 8px' }}>Reviewed</h3>
+                <table className="admin-table">
+                  <thead><tr><th>Type</th><th>Name</th><th>Email</th><th>Status</th><th>Reviewed</th></tr></thead>
+                  <tbody>
+                    {reviewed.map(r => (
+                      <tr key={r.id}>
+                        <td>{r.kind === 'account' ? 'New account' : 'Password reset'}</td>
+                        <td>{r.full_name || '—'}</td>
+                        <td>{r.email}</td>
+                        <td><span className={r.status === 'approved' ? 'pass-badge' : 'fail-badge'}>{r.status.toUpperCase()}</span></td>
+                        <td>{r.reviewed_at ? new Date(r.reviewed_at).toLocaleDateString() : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
           </div>
         )}
 
@@ -460,13 +679,18 @@ export default function Admin() {
             <h3 style={{ color: 'var(--navy)', marginBottom: 16 }}>Create New User</h3>
             {createMsg && <div className={`msg ${createMsg.type === 'success' ? 'msg-success' : 'msg-error'}`}>{createMsg.text}</div>}
             <form onSubmit={handleCreateUser}>
-              <input type="text" placeholder="Username (no spaces)" value={newUser} onChange={e => setNewUser(e.target.value.replace(/\s/g, ''))} />
+              <input type="text" placeholder="Username (no spaces)" value={newUser} onChange={e => setNewUser(e.target.value.replace(/[\s@]/g, ''))} />
+              <input type="email" placeholder="Email address (optional)" value={newEmail} onChange={e => setNewEmail(e.target.value)} />
               <input type="password" placeholder="Password (min 6 characters)" value={newPass} onChange={e => setNewPass(e.target.value)} />
               <input type="text" placeholder="Display Name (e.g. John Smith)" value={newName} onChange={e => setNewName(e.target.value)} />
               <select value={newRole} onChange={e => setNewRole(e.target.value)}>
                 <option value="user">User</option>
                 <option value="admin">Admin</option>
               </select>
+              <p className="hint">
+                With an email address they sign in with that address and can reset their own password.
+                Without one they sign in with just the username, and only you can reset it.
+              </p>
               <button type="submit" className="btn btn-gold btn-full" disabled={!newUser.trim() || newPass.length < 6 || !newName.trim() || creating}>
                 {creating ? 'Creating...' : 'Create User'}
               </button>
